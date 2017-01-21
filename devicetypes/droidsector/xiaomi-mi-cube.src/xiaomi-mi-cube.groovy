@@ -23,8 +23,18 @@ metadata {
         capability "Indicator"
 		capability "Sensor"
         
-        attribute "currentButton", "STRING"
-        attribute "numButtons", "STRING"
+        attribute "State Array", "string"
+        attribute "lastAction", "string"
+        attribute "numButtons", "string"
+        
+        command "flip90"
+        command "flip180"
+        command "slide"
+        command "knock"
+        command "rotateRight"
+        command "rotateLeft"
+        
+        command "poll"
 	}
 
 	simulator {
@@ -37,20 +47,42 @@ metadata {
     	standardTile("button", "device.button", width: 1, height: 1) {
 			state "default", label: "", icon: "st.unknown.zwave.remote-controller", backgroundColor: "#ffffff"
 		}
-    
-		valueTile("battery", "device.battery", decoration: "flat", inactiveLabel: false, width: 2, height: 2) {
+    	
+		valueTile("battery", "device.battery", decoration: "flat", inactiveLabel: false, width: 1, height: 1) {
 			state "battery", label:'${currentValue}% battery', unit:""
 		}
-		
+
+		standardTile("shake", "device.button", width: 1, height: 1, decoration: "flat") {
+			state "default", label: 'Shake', action: "shake"
+		}
+        standardTile("flip90", "device.button", width: 1, height: 1, decoration: "flat") {
+			state "default", label: 'Flip 90', action: "flip90"
+		}
+        standardTile("flip180", "device.button", width: 1, height: 1, decoration: "flat") {
+			state "default", label: 'Flip 180', action: "flip180"
+		}
+    	standardTile("slide", "device.button", width: 1, height: 1, decoration: "flat") {
+			state "default", label: 'Slide', action: "slide"
+		}
+        standardTile("knock", "device.button", width: 1, height: 1, decoration: "flat") {
+			state "default", label: 'Knock', action: "knock"
+		}
+        standardTile("rotate-right", "device.button", width: 1, height: 1, decoration: "flat") {
+			state "default", label: 'Rotate Right', action: "rotateRight"
+		}
+        standardTile("rotate-left", "device.button", width: 1, height: 1, decoration: "flat") {
+			state "default", label: 'Rotate Left', action: "rotateLeft"
+		}
+        
 		main(["button"])
-		details(["button", "battery"])
+		details(["button", "battery", "shake", "flip90", "flip180", "slide", "knock", "rotate-right", "rotate-left"])
 	}
 }
 
 def parse(String description) {
 	log.debug "description: $description"
     def value = zigbee.parse(description)?.text
-    log.debug "Parse: $value"
+    
 	Map map = [:]
 	if (description?.startsWith('catchall:')) {
 		map = parseCatchAllMessage(description)
@@ -125,6 +157,8 @@ private Map parseReportAttributeMessage(String description) {
     	resultMap = getRotationResult(descMap.value)
            
     }
+    
+    sendState()
     
 	return resultMap
 }
@@ -207,9 +241,31 @@ private Map getBatteryResult(rawValue) {
 	return result
 }
 
+private Map buttonEvent(int button) {
+	
+    final String[] actions = ['', 'Shake', 'Flip 90', 'Flip 180', 'Slide', 'Knock', 'Rotate right', 'Rotate left']
+    
+    String motion = actions[button]
+
+	log.debug motion
+    sendEvent([name: 'lastAction', value: motion, data:[buttonNumber: button], displayed: false])
+    
+    String linkText = getLinkText(device)
+    
+    def commands = [
+		name: "button",
+        value: "pushed",
+        data: [buttonNumber: button],
+		descriptionText: "${linkText} detected motion: ${motion} ",
+        isStateChange: true
+	] 
+    
+    return commands
+}
+
 private Map getMotionResult(value) {
-	String linkText = getLinkText(device)
-    String motion, button
+    String motion
+    int button
    
    	// first byte: type of motion
     if (value.startsWith("00")) {
@@ -219,76 +275,50 @@ private Map getMotionResult(value) {
         
         switch (angle) {
         	
-        case 0: 
-        	motion = "Shake"
-        	button = "1"
+        case 0:  			// Shake
+        	button = 1
             break
             
         case 2:
             log.debug "Small shake, ignoring..."
         	return null
             
-        case 3..127:
-        	motion = "Flip 90"
-        	button = "2"
+        case 3..127: 		// Flip 90
+        	button = 2
             break
             
-        default:
-        	motion = "Flip 180"
-        	button = "3"
+        default: 			// Flip 180
+        	button = 3
             break
             
         }
     }         
-    else if (value.startsWith("01")) {
-        motion = "Slide"
-        button = "4"
+    else if (value.startsWith("01")) { // Slide
+        button = 4
     }
-    else if (value.startsWith("02")) {
-        motion =  "Knock"
-        button = "5"
+    else if (value.startsWith("02")) { // Knock
+        button = 5
     }
-
-//	log.debug motion
-
-    def commands = [
-		name: "button",
-		value: motion,
-        data: [buttonNumber: button],
-		descriptionText: "${linkText} detected motion: ${motion} ",
-        isStateChange: true
-	] 
-    
-    return commands
+   
+    return buttonEvent(button)
 }
 
 private Map getRotationResult(value) {
    
 	String linkText = getLinkText(device)
-	String button, motion
+	String motion
+    int button
 	
     // first 8 bytes are related to rotation
     String rotation = value.substring(0, 8)
    
-	if (Long.parseLong(rotation, 16) < 0x80000000) {
-        motion = "Rotate right"
+	if (Long.parseLong(rotation, 16) < 0x80000000) {  	// Rotate right
         button = 6
-    } else {
-    	motion = "Rotate left"
+    } else { 											// Rotate left
         button = 7
     }
 	
-//  log.debug motion
-	    
-    def commands = [
-		name: "button",
-		value: motion,
-        data: [buttonNumber: button],
-		descriptionText: "${linkText} detected motion: ${motion} ",
-        isStateChange: true
-	]
-    
-    return commands
+	return buttonEvent(button)
 }
 
 def configure() {
@@ -307,5 +337,44 @@ def reset() {
 }
 
 def initialize() {
+	sendState()
+}
+
+def poll() {
+	sendState() 
+}
+
+def sendState() {
 	sendEvent(name: "numberOfButtons", value: 7)
+}
+
+// commands
+
+def shake() {
+	log.debug "Button press"
+	sendEvent(buttonEvent(1))
+}
+
+def flip90() {
+	sendEvent(buttonEvent(2))
+}
+
+def flip180() {
+	sendEvent(buttonEvent(3))
+}
+
+def slide() {
+	sendEvent(buttonEvent(4))
+}
+
+def knock() {
+	sendEvent(buttonEvent(5))
+}
+
+def rotateRight() {
+	sendEvent(buttonEvent(6))
+}
+
+def rotateLeft() {
+	sendEvent(buttonEvent(7))
 }
